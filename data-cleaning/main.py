@@ -1,122 +1,91 @@
-import pandas as pd
-import urllib.parse
 import os
-import ast
 import logging
+import pandas as pd
+from data_processor import DataProcessor
+from data_structuring import DataStructurer
+import glob
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Function to load and clean the dataset
-def load_and_clean_dataset(file_path):
+# Get the current directory where the main runner is located
+current_dir = os.path.dirname(os.path.abspath(__file__))
+data_dir = os.path.join(current_dir, "data")
+cleaned_dir = os.path.join(data_dir, "cleaned_data")
+structured_dir = os.path.join(data_dir, "structured_data")
+
+# Ensure the directories exist
+os.makedirs(data_dir, exist_ok=True)
+os.makedirs(cleaned_dir, exist_ok=True)
+os.makedirs(structured_dir, exist_ok=True)
+
+# Step 1: Clean the data using DataProcessor
+logging.info("Starting data cleaning process...")
+main_processor = DataProcessor(
+    split_methods=['camel', 'snake', 'kebab', 'number', 'team_names'],
+    custom_stop_words=['etc', 'eg', 'ie']
+)
+
+# Process all files for cleaning
+main_processor.process_data_directory(
+    data_directory=data_dir,
+    output_dir=cleaned_dir,
+    exclude_columns=['id', 'timestamp', 'url'],  # Common columns to exclude from cleaning
+    apply_nltk=True,
+    dropna_threshold=0.3,
+    export_formats=['csv']
+)
+
+# Step 2: Structure the cleaned data
+logging.info("Starting data structuring process...")
+structurer = DataStructurer()
+
+# Get all cleaned files
+cleaned_files = glob.glob(os.path.join(cleaned_dir, "*.csv"))
+
+for file_path in cleaned_files:
     try:
-        # Load dataset
-        dataset = pd.read_csv(file_path)
-
-        def clean_text(text):
-            """Safely attempts to convert a string to a list and join its elements."""
-            if isinstance(text, str):
-                try:
-                    #Attempt to parse the string as a literal
-                    parsed_data = ast.literal_eval(text)
-
-                    #check if the parsed data is a list
-                    if isinstance(parsed_data, list):
-                        return ' '.join(parsed_data)
-                    else:
-                         logging.warning(f"String {text} parsed as a non-list type: {type(parsed_data)}. Returning original string.")
-                         return text #return the original string if not a list.
-
-                except (SyntaxError, ValueError) as e:
-                    logging.error(f"Could not parse text as a literal: {text}. Error: {e}")
-                    return text # return original string on error
-            return text #return if not a string
-
-        # Apply the cleaning function
-        dataset['summary'] = dataset['summary'].apply(clean_text)
-        dataset['content'] = dataset['content'].apply(clean_text)
+        # Read the file to analyze its columns
+        df = pd.read_csv(file_path)
+        file_name = os.path.basename(file_path)
         
-
-        # Replace 'nan' or empty lists with None or an empty string
-        dataset['summary'] = dataset['summary'].apply(lambda x: None if pd.isna(x) or str(x).lower() == 'nan' or str(x) == '[]' else x)
-        dataset['content'] = dataset['content'].apply(lambda x: None if pd.isna(x) or str(x).lower() == 'nan' or str(x) == '[]' else x)
-
-
-        # Remove leading zeros in all numeric columns
-        for column in dataset.select_dtypes(include=['object']).columns:
-            dataset[column] = dataset[column].apply(lambda x: str(x).lstrip('0') if isinstance(x, str) else x)
-
-        # Function to check if the url is valid
-        def is_valid_url(url):
-            try:
-                result = urllib.parse.urlparse(url)
-                return all([result.scheme, result.netloc])
-            except ValueError:
-                return False
-
-        # Apply the URL Validation
-        dataset['url_valid'] = dataset['url'].apply(is_valid_url)
-
-        # Structure the dataset
-        structured_dataset = dataset[['title', 'summary', 'content', 'url', 'url_valid']]
-
-        # Format the column names
-        structured_dataset.columns = ['Title', 'Summary', 'Content', 'URL', 'Is URL Valid']
-
-        return structured_dataset
-
-    except FileNotFoundError:
-        print(f"Error: The file at {file_path} was not found.")
-        return None
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        return None
-
-# Get the current directory (Where the script is running)
-current_directory = os.path.dirname(os.path.abspath(__file__))
-
-# Use the full path to the file (in the same directory as the script)
-file_path = os.path.join(current_directory, 'cleaned_relationship_data.csv')  
-cleaned_dataset = load_and_clean_dataset(file_path)
-
-# Main processing function
-def process_data_directory(data_directory):
-    # Create the cleaned_data directory if it doesn't exist
-    cleaned_data_directory = os.path.join(data_directory, 'structured_data')
-    os.makedirs(cleaned_data_directory, exist_ok=True)
-
-    # Find all files in the data directory
-    all_files = glob.glob(os.path.join(data_directory, '*'))
-
-    for file_path in all_files:
-        if os.path.isfile(file_path): #make sure file is an actual file.
-            logging.info(f"Processing file: {file_path}")
-
-            structured_dataset = load_and_clean_dataset(file_path)
-
-            if structured_dataset is not None:
-                # Create the output file path in the cleaned_data directory
-                file_name = os.path.basename(file_path)
-                name, ext = os.path.splitext(file_name)
-                output_file_name = f'structured_{name}.csv'
-                output_file_path = os.path.join(cleaned_data_directory, output_file_name)
-
-                # Save the cleaned dataset to a new CSV file
-                structured_dataset.to_csv(output_file_path, index=False)
-                logging.info(f"Dataset saved to {output_file_path}")
-            else:
-                logging.warning(f"Skipping {file_path} due to invalid data.")
+        logging.info(f"Analyzing columns for {file_name}")
+        
+        # Auto-detect potential text columns (columns with object/string dtype)
+        text_columns = list(df.select_dtypes(include=['object']).columns)
+        
+        # Auto-detect URL columns
+        url_columns = [col for col in text_columns if any(url_term in col.lower() 
+                                                         for url_term in ['url', 'link', 'href', 'uri'])]
+        
+        # Choose the first URL column if any exist
+        url_column = url_columns[0] if url_columns else None
+        
+        # Generate a simple mapping (original column name to title case)
+        columns_mapping = {col: col.replace('_', ' ').title() for col in df.columns}
+        
+        logging.info(f"Detected text columns: {text_columns}")
+        logging.info(f"Detected URL column: {url_column}")
+        
+        # Structure this specific file using the static method
+        structured_dataset = DataStructurer.load_and_clean_dataset(
+            file_path,
+            text_columns=text_columns,
+            url_column=url_column,
+            columns_mapping=columns_mapping
+        )
+        
+        if structured_dataset is not None:
+            # Save structured dataset
+            name, ext = os.path.splitext(os.path.basename(file_path))
+            output_file_name = f'structured_{name}.csv'
+            output_file_path = os.path.join(structured_dir, output_file_name)
+            structured_dataset.to_csv(output_file_path, index=False)
+            logging.info(f"Structured dataset saved to {output_file_path}")
         else:
-            logging.info(f"Skipping {file_path} as it is not a file.")
+            logging.warning(f"Failed to structure {file_name}")
+            
+    except Exception as e:
+        logging.error(f"Error processing {file_path}: {e}")
 
-# Get the current directory (Where the script is running)
-current_directory = os.path.dirname(os.path.abspath(__file__))
-
-# Define the data directory
-data_directory = os.path.join(current_directory, 'data')
-os.makedirs(data_directory, exist_ok=True) #create if doesn't exist
-
-# Process all files in the data directory
-process_data_directory(data_directory)
-
-print("Processing complete.")
+logging.info("All processing completed.")
